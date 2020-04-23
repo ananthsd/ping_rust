@@ -9,7 +9,7 @@ use std::net::Ipv4Addr;
 use std::time::Duration;
 use crossbeam::crossbeam_channel::{bounded, Receiver};
 use std::str::FromStr;
-use std::cmp::{min, max};
+use std::cmp::max;
 
 fn ctrl_channel() -> Result<Receiver<()>, ctrlc::Error> {
     let (sender, receiver) = bounded(100);
@@ -39,7 +39,7 @@ fn main(){
         .arg(Arg::with_name("timeout")
             .short("W")
             .value_name("timeout_ms")
-            .help("# of ms to wait before timeout")
+            .help("# of ms to wait before timeout. Minimum is 10ms.")
             .takes_value(true))
         .arg(Arg::with_name("TTL")
                  .short("ttl")
@@ -56,7 +56,7 @@ fn main(){
                 Ok(ttl)=>{
                     ttl as u8
                 }
-                Err(e)=>{
+                Err(_)=>{
                     println!("Error parsing TTL!");
                     return;
                 }
@@ -74,7 +74,7 @@ fn main(){
                 Ok(millis)=>{
                     Duration::from_millis(max(millis,10))
                 }
-                Err(e)=>{
+                Err(_)=>{
                     println!("Error parsing timeout!");
                     return;
                 }
@@ -90,7 +90,7 @@ fn main(){
                 Ok(count)=>{
                     count
                 }
-                Err(e)=>{
+                Err(_)=>{
                     println!("Error parsing count!");
                     return;
                 }
@@ -108,7 +108,7 @@ fn main(){
         Ok(destination)=>{
             transmitter.ping(destination, limit, timeout, flood, &mut statistics,ctrl_c_events);
         },
-        Err(e)=>{
+        Err(_)=>{
             println!("Could not parse IP");
             return;
         }

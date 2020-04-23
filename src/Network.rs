@@ -3,8 +3,7 @@ use pnet::packet::icmp::{IcmpPacket, IcmpTypes, IcmpCode};
 use pnet::packet::icmp::echo_request::MutableEchoRequestPacket;
 use pnet::packet::ip::IpNextHeaderProtocols;
 use pnet::packet::ipv4::MutableIpv4Packet;
-use pnet::transport::{transport_channel, TransportChannelType, icmp_packet_iter, ipv4_packet_iter, TransportSender, TransportReceiver};
-use pnet::transport::TransportProtocol::{Ipv4, Ipv6};
+use pnet::transport::{transport_channel, TransportChannelType, ipv4_packet_iter, TransportSender};
 use std::net::{Ipv4Addr, IpAddr};
 use pnet::packet::MutablePacket;
 use pnet::util::checksum;
@@ -12,15 +11,14 @@ use pnet::packet::Packet;
 use pnet::packet::PacketSize;
 use std::time::{Instant, Duration};
 use crate::Network::Statistics::StatTracker;
-use crossbeam::crossbeam_channel::{bounded, Receiver};
-use std::sync::mpsc::TryRecvError;
+use crossbeam::crossbeam_channel::Receiver;
 
 pub(crate) mod Statistics;
 
 
 ////https://github.com/libpnet/libpnet/blob/master/src/pnettest.rs
 const IPV4_HEADER_LEN: usize = 21;
-const IPV6_HEADER_LEN: usize = 40;
+// const IPV6_HEADER_LEN: usize = 40;
 ////http://www.networksorcery.com/enp/protocol/icmp.htm#Code
 const TCMP_HEADER_LEN: usize = 8;
 const TCMP_DATA_LEN: usize = 32;
@@ -60,8 +58,8 @@ impl Transmitter {
         num_sent+=1;
         let mut start = Instant::now();
         // println!("sent packet data:{}", data_sent);
-
         let mut receiver = ipv4_packet_iter(&mut receiver);
+        let mut send_packet = false;
         // println!("setup receiver");
         loop {
             //check for exit condition
@@ -71,7 +69,7 @@ impl Transmitter {
                     println!("\n{}",statistics.get_report());
                     return;
                 },
-                Err(e)=>{}
+                Err(_)=>{}
             }
             let next = receiver.next_with_timeout(timeout);
             // println!("waiting");
@@ -114,15 +112,7 @@ impl Transmitter {
                             if flood {
                                 print!(".");
                             }
-                            self.send_ipv4_packet(&mut sender, &mut destination);
-                            num_sent+=1;
-                            // let packet = self.get_ipv4_packet(&mut ipv4_buf, &mut icmp_buf, ttl, sequence_num, destination);
-                            // println!("initialized packet :{:?}", packet);
-                            // let data_sent = match sender.send_to(packet, IpAddr::V4(destination)) {
-                            //     Ok(num) => { num }
-                            //     Err(e) => { panic!("Packet not sent: {}", e) }
-                            // };
-                            start = Instant::now();
+                            send_packet = true;
 
                             // return;
                         }
@@ -143,10 +133,8 @@ impl Transmitter {
                             if flood {
                                 print!(".");
                             }
-                            self.send_ipv4_packet(&mut sender, &mut destination);
-                            num_sent+=1;
                             // println!("initialized packet :{:?}", packet);
-                            start = Instant::now();
+                            send_packet = true;
                         }
                     }
                 }
@@ -154,6 +142,12 @@ impl Transmitter {
                     println!("Error");
                     panic!("We have an error:{}", e);
                 }
+            }
+            if send_packet {
+                self.send_ipv4_packet(&mut sender, &mut destination);
+                num_sent+=1;
+                start = Instant::now();
+                send_packet = false;
             }
         }
         // println!("Done loop");

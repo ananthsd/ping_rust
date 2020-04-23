@@ -1,5 +1,4 @@
 use std::time::{Duration, Instant};
-use std::alloc::System;
 use std::cmp::{min, max};
 
 pub struct StatTracker{
