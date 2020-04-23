@@ -3,14 +3,16 @@ use pnet::packet::icmp::{IcmpPacket, IcmpTypes, IcmpCode};
 use pnet::packet::icmp::echo_request::MutableEchoRequestPacket;
 use pnet::packet::ip::IpNextHeaderProtocols;
 use pnet::packet::ipv4::MutableIpv4Packet;
-use pnet::transport::{transport_channel, TransportChannelType, icmp_packet_iter, ipv4_packet_iter};
+use pnet::transport::{transport_channel, TransportChannelType, icmp_packet_iter, ipv4_packet_iter, TransportSender, TransportReceiver};
 use pnet::transport::TransportProtocol::{Ipv4, Ipv6};
 use std::net::{Ipv4Addr, IpAddr};
 use pnet::packet::MutablePacket;
 use pnet::util::checksum;
 use pnet::packet::Packet;
 use pnet::packet::PacketSize;
-use std::time::Instant;
+use std::time::{Instant, Duration};
+use crate::Network::Statistics::StatTracker;
+
 mod Statistics;
 
 
@@ -25,61 +27,89 @@ const TOTAL_LEN: usize = IPV4_HEADER_LEN + TCMP_LEN;
 //const TOTAL_LEN:usize = 84;
 
 pub struct Transmitter {
-
+    pub ttl:u8,
+    sequence_num:u16
 }
 
 impl Transmitter {
+    pub fn new(ttl:u8)->Transmitter{
+        Transmitter{
+            ttl,
+            sequence_num:0
+        }
+    }
+
     //https://github.com/libpnet/libpnet/blob/master/pnet_packet/src/icmp.rs.in
-    pub fn ping(&self) {
+    pub fn ping(&mut self, mut destination:Ipv4Addr, timeout:Duration) {
         //you need root for this
         let (mut sender, mut receiver) = match transport_channel(4096, TransportChannelType::Layer3(IpNextHeaderProtocols::Icmp)) {
             Ok((s, r)) => { (s, r) }
             Err(e) => { panic!("Could not create sockets:{}", e) }
         };
         // println!("initialized channels");
-
-        let destination = Ipv4Addr::new(1, 1, 1, 1);
-        let mut ipv4_buf = [0; 40];
-        let mut icmp_buf = [0; 40];
-        let ttl = 50;
-        let mut sequence_num = 0;
-        let packet = self.get_ipv4_packet(&mut ipv4_buf, &mut icmp_buf, ttl, sequence_num, destination);
-        // println!("initialized packet :{:?}", packet);
+        let mut statistics = StatTracker::initialize();
+        self.send_ipv4_packet(&mut sender, &mut destination);
         let mut start = Instant::now();
-        let data_sent = match sender.send_to(packet, IpAddr::V4(destination)) {
-            Ok(num) => { num }
-            Err(e) => { panic!("Packet not sent: {}", e) }
-        };
         // println!("sent packet data:{}", data_sent);
-
 
         let mut receiver = ipv4_packet_iter(&mut receiver);
         // println!("setup receiver");
         loop {
-            // println!("checking receiver");
-            let next = receiver.next();
+            let next = receiver.next_with_timeout(timeout);
             // println!("waiting");
+
             match next {
-                Ok((packet, addr)) => {
-                    // println!("we got a packet: {:?} from {} with size {}", IcmpPacket::new(packet.payload()), addr,packet.packet_size());
-                    println!("{} bytes from {}: icmp_seq={} ttl={} time={:?}", packet.packet_size(), addr,sequence_num, ttl,start.elapsed());
-                    sequence_num+=1;
-                    let packet = self.get_ipv4_packet(&mut ipv4_buf, &mut icmp_buf, ttl, sequence_num, destination);
-                    // println!("initialized packet :{:?}", packet);
-                    start = Instant::now();
-                    let data_sent = match sender.send_to(packet, IpAddr::V4(destination)) {
-                        Ok(num) => { num }
-                        Err(e) => { panic!("Packet not sent: {}", e) }
-                    };
-                    // return;
+                Ok(option) => {
+                    match option {
+                        Some((packet, addr)) => {
+                            // println!("we got a packet: {:?} from {} with size {}", IcmpPacket::new(packet.payload()), addr,packet.packet_size());
+                            let rtt = start.elapsed();
+                            println!("{} bytes from {}: icmp_seq={} ttl={} loss={:.2}% time={:?}", packet.packet_size(), addr,self.sequence_num, self.ttl,statistics.get_packet_loss(),rtt);
+                            self.sequence_num+=1;
+                            statistics.register_received(rtt);
+                            self.send_ipv4_packet(&mut sender, &mut destination);
+                            // let packet = self.get_ipv4_packet(&mut ipv4_buf, &mut icmp_buf, ttl, sequence_num, destination);
+                            // println!("initialized packet :{:?}", packet);
+                            // let data_sent = match sender.send_to(packet, IpAddr::V4(destination)) {
+                            //     Ok(num) => { num }
+                            //     Err(e) => { panic!("Packet not sent: {}", e) }
+                            // };
+                            start = Instant::now();
+
+                            // return;
+                        }
+                        None=>{
+                            //timeout
+                            //we have dropped the packet
+                            println!("Packet dropped");
+                            statistics.register_drop();
+                            self.send_ipv4_packet(&mut sender, &mut destination);
+                            // println!("initialized packet :{:?}", packet);
+                            start = Instant::now();
+                        }
+                    }
                 }
                 Err(e) => {
+                    println!("Error");
                     panic!("We have an error:{}", e);
                 }
             }
         }
+        // println!("Done loop");
     }
 
+
+    fn send_ipv4_packet(&mut self,sender:&mut TransportSender, destination: &mut Ipv4Addr)->usize{
+        // println!("send packet");
+        let mut ipv4_buf = [0; 40];
+        let mut icmp_buf = [0; 40];
+        // println!("initialized packet :{:?}", packet);
+        let packet = self.get_ipv4_packet(&mut ipv4_buf, &mut icmp_buf, self.ttl, self.sequence_num, destination);
+        match sender.send_to(packet, IpAddr::V4(destination.clone())) {
+            Ok(num) => { num }
+            Err(e) => { panic!("Packet not sent: {}", e) }
+        }
+    }
 
     //http://www.networksorcery.com/enp/protocol/icmp.htm
     //https://www.tutorialspoint.com/ipv4/ipv4_packet_structure.htm
@@ -106,7 +136,7 @@ impl Transmitter {
     }
 
     ////https://docs.rs/pnet/0.25.0/pnet/packet/ipv4/struct.MutableIpv4Packet.html
-    fn get_ipv4_packet<'a>(&self, packet_buf: &'a mut [u8], payload_buf: &'a mut [u8], ttl: u8, sequence_num: u16, destination: Ipv4Addr) -> MutableIpv4Packet<'a> {
+    fn get_ipv4_packet<'a>(&self, packet_buf: &'a mut [u8], payload_buf: &'a mut [u8], ttl: u8, sequence_num: u16, destination: &mut Ipv4Addr) -> MutableIpv4Packet<'a> {
         let mut packet = match MutableIpv4Packet::new(packet_buf) {
             Some(p) => { p }
             None => { panic!("Could not create ipv4 packet") }
@@ -118,7 +148,7 @@ impl Transmitter {
         packet.set_ttl(ttl);
         packet.set_next_level_protocol(IpNextHeaderProtocols::Icmp);
 //    packet.set_source(source);
-        packet.set_destination(destination);
+        packet.set_destination(destination.clone());
         packet.set_checksum(pnet::packet::ipv4::checksum(&packet.to_immutable()));
         packet.set_payload(self.get_payload(payload_buf, sequence_num).packet_mut());
         packet

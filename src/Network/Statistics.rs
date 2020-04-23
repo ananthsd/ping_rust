@@ -11,11 +11,27 @@ pub struct StatTracker{
     pub rtt_min_time:Duration,
     pub rtt_max_time:Duration,
     //used for sdev sqrt(square_mean^2-mean^2)
-    pub rtt_square_sum_ms:i128,
+    pub rtt_square_sum_ms:u128,
 }
 impl StatTracker{
-    pub fn initialize(&mut self){
-        self.initial_start_time = Instant::now();
+
+    pub fn initialize()->StatTracker{
+        let num_packets_sent = 0;
+        let num_packets_dropped = 0;
+        let rtt_total_time = Duration::new(0,0);
+        let rtt_min_time = Duration::new(0,0);
+        let rtt_max_time = Duration::new(0,0);
+        let rtt_square_sum_ms = 0;
+        let initial_start_time = Instant::now();
+        StatTracker{
+            num_packets_sent,
+            initial_start_time,
+            num_packets_dropped,
+            rtt_total_time,
+            rtt_min_time,
+            rtt_max_time,
+            rtt_square_sum_ms
+        }
     }
     pub fn register_drop(&mut self){
         self.num_packets_dropped+=1;
@@ -28,14 +44,18 @@ impl StatTracker{
         self.rtt_max_time = max(rtt,self.rtt_max_time);
         //doing this for precision purposes, but may need to go to millis if this overflows
         let millis = rtt.as_millis()+rtt.subsec_micros() as u128;
-        self.rtt_square_sum_micros += millis*millis;
+        self.rtt_square_sum_ms += millis*millis;
     }
     //based of off the way linux ping works
     pub fn get_report(&mut self)->String{
         let num_received = self.num_packets_sent-self.num_packets_dropped;
-        let packet_loss = (self.num_packets_dropped as i64)/(self.num_packets_sent as i64);
-
-        format!("{} packets transmitted, {} received, {}% packet loss, time {:?}\nrtt min/avg/max/mdev = {:?}/{:?}/{:?}/{}",
-         self.num_packets_sent, num_received, packet_loss, self.initial_start_time.elapsed(), self.rtt_min_time, ,self.rtt_max_time)
+        let packet_loss = self.get_packet_loss();
+        let avg_time = (self.rtt_total_time.as_millis() as i128+self.rtt_total_time.subsec_micros() as i128)/num_received as i128;
+        let mdev = ((self.rtt_square_sum_ms as i128-avg_time*avg_time) as f64).sqrt();
+        format!("{} packets transmitted, {} received, {:.2}% packet loss, time {:?}\nrtt min/avg/max/mdev = {:?}/{} ms/{:?}/{:.3} ms",
+         self.num_packets_sent, num_received, packet_loss, self.initial_start_time.elapsed(), self.rtt_min_time, avg_time,self.rtt_max_time, mdev)
+    }
+    pub fn get_packet_loss(&mut self) ->f64{
+        (self.num_packets_dropped as f64)/(self.num_packets_sent as f64) * 100f64
     }
 }
