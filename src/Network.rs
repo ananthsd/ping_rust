@@ -42,14 +42,22 @@ impl Transmitter {
     }
 
     //https://github.com/libpnet/libpnet/blob/master/pnet_packet/src/icmp.rs.in
-    pub fn ping(&mut self, mut destination:Ipv4Addr, timeout:Duration, statistics:&mut StatTracker, ctrl_reciever:Receiver<()>) {
+    pub fn ping(&mut self, mut destination:Ipv4Addr, limit:i64, timeout:Duration, flood:bool, statistics:&mut StatTracker, ctrl_reciever:Receiver<()>) {
+        if limit == 0 {
+            return;
+        }
         //you need root for this
         let (mut sender, mut receiver) = match transport_channel(4096, TransportChannelType::Layer3(IpNextHeaderProtocols::Icmp)) {
             Ok((s, r)) => { (s, r) }
             Err(e) => { panic!("Could not create sockets:{}", e) }
         };
         // println!("initialized channels");
+        let mut num_sent = 0;
+        if flood {
+            print!(".");
+        }
         self.send_ipv4_packet(&mut sender, &mut destination);
+        num_sent+=1;
         let mut start = Instant::now();
         // println!("sent packet data:{}", data_sent);
 
@@ -72,12 +80,42 @@ impl Transmitter {
                 Ok(option) => {
                     match option {
                         Some((packet, addr)) => {
-                            // println!("we got a packet: {:?} from {} with size {}", IcmpPacket::new(packet.payload()), addr,packet.packet_size());
+                            // println!("we got a packet: {:?} from {} with size {}", IcmpPacket::new(packet.payload()).get_icmp_type(), addr,packet.packet_size());
                             let rtt = start.elapsed();
-                            println!("{} bytes from {}: icmp_seq={} ttl={} loss={:.2}% time={:?}", packet.packet_size(), addr,self.sequence_num, self.ttl,statistics.get_packet_loss(),rtt);
+                            match IcmpPacket::new(packet.payload()) {
+                                Some(icmp)=>{
+                                    // println!("{:?}",icmp.get_icmp_type());
+                                    if icmp.get_icmp_type() == IcmpTypes::TimeExceeded{
+                                        statistics.register_ttl_exceeded();
+                                        if flood {
+                                            print!("");
+                                        }
+                                        else{
+                                            println!("icmp_seq={} TTL of {} exceeded",self.sequence_num, self.ttl);
+                                        }
+                                    }
+                                    else{
+                                        statistics.register_received(rtt);
+                                        if flood{
+                                            print!("{}",(8u8 as char));
+                                        }
+                                        else {
+                                            println!("{} bytes from {}: icmp_seq={} ttl={} loss={:.2}% time={:?}", packet.packet_size(), addr,self.sequence_num, self.ttl,statistics.get_packet_loss(),rtt);
+                                        }
+                                    }
+                                },
+                                None=>{}
+                            }
                             self.sequence_num+=1;
-                            statistics.register_received(rtt);
+                            if limit > 0 && num_sent >= limit {
+                                println!("\n{}",statistics.get_report());
+                                return;
+                            }
+                            if flood {
+                                print!(".");
+                            }
                             self.send_ipv4_packet(&mut sender, &mut destination);
+                            num_sent+=1;
                             // let packet = self.get_ipv4_packet(&mut ipv4_buf, &mut icmp_buf, ttl, sequence_num, destination);
                             // println!("initialized packet :{:?}", packet);
                             // let data_sent = match sender.send_to(packet, IpAddr::V4(destination)) {
@@ -91,9 +129,22 @@ impl Transmitter {
                         None=>{
                             //timeout
                             //we have dropped the packet
-                            println!("Packet dropped");
+                            if flood {
+                                print!("");
+                            }
+                            else{
+                                println!("Packet dropped");
+                            }
                             statistics.register_drop();
+                            if limit > 0 && num_sent >= limit {
+                                println!("\n{}", statistics.get_report());
+                                return;
+                            }
+                            if flood {
+                                print!(".");
+                            }
                             self.send_ipv4_packet(&mut sender, &mut destination);
+                            num_sent+=1;
                             // println!("initialized packet :{:?}", packet);
                             start = Instant::now();
                         }
@@ -126,8 +177,6 @@ impl Transmitter {
 
     ////https://docs.rs/pnet/0.25.0/pnet/packet/icmp/echo_request/struct.MutableEchoRequestPacket.html
     fn get_payload<'a>(&self, buf: &'a mut [u8], sequence_num: u16) -> MutableEchoRequestPacket<'a> {
-        use pnet::packet::icmp::{IcmpPacket, IcmpTypes, IcmpCode};
-        use pnet::util::checksum;
 
         let mut payload = match MutableEchoRequestPacket::new(buf) {
             Some(p) => { p }
