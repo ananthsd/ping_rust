@@ -12,8 +12,10 @@ use pnet::packet::Packet;
 use pnet::packet::PacketSize;
 use std::time::{Instant, Duration};
 use crate::Network::Statistics::StatTracker;
+use crossbeam::crossbeam_channel::{bounded, Receiver};
+use std::sync::mpsc::TryRecvError;
 
-mod Statistics;
+pub(crate) mod Statistics;
 
 
 ////https://github.com/libpnet/libpnet/blob/master/src/pnettest.rs
@@ -40,14 +42,13 @@ impl Transmitter {
     }
 
     //https://github.com/libpnet/libpnet/blob/master/pnet_packet/src/icmp.rs.in
-    pub fn ping(&mut self, mut destination:Ipv4Addr, timeout:Duration) {
+    pub fn ping(&mut self, mut destination:Ipv4Addr, timeout:Duration, statistics:&mut StatTracker, ctrl_reciever:Receiver<()>) {
         //you need root for this
         let (mut sender, mut receiver) = match transport_channel(4096, TransportChannelType::Layer3(IpNextHeaderProtocols::Icmp)) {
             Ok((s, r)) => { (s, r) }
             Err(e) => { panic!("Could not create sockets:{}", e) }
         };
         // println!("initialized channels");
-        let mut statistics = StatTracker::initialize();
         self.send_ipv4_packet(&mut sender, &mut destination);
         let mut start = Instant::now();
         // println!("sent packet data:{}", data_sent);
@@ -55,6 +56,15 @@ impl Transmitter {
         let mut receiver = ipv4_packet_iter(&mut receiver);
         // println!("setup receiver");
         loop {
+            //check for exit condition
+            match ctrl_reciever.try_recv(){
+                Ok(())=>{
+                    //we found ctrl-c
+                    println!("\n{}",statistics.get_report());
+                    return;
+                },
+                Err(e)=>{}
+            }
             let next = receiver.next_with_timeout(timeout);
             // println!("waiting");
 
